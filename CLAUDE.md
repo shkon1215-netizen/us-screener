@@ -220,6 +220,17 @@ page's verdict equals the Python funnel at default thresholds.
 GitHub Pages, with two retries after pauses for Yahoo throttling. Timeout
 150 minutes — the cold run is ~45.
 
+Live: https://shkon1215-netizen.github.io/us-screener/. Unlisted - `noindex`
+plus a blanket `robots.txt` - but the repo is public, which free Pages
+requires. No screen output is committed.
+
+**Nasdaq, the SEC and Yahoo all answer GitHub's runners** - confirmed on the
+first run, 2026-10-18 (push-triggered, 45 minutes): SEC registers 1,168 /
+234, 3,787 of 3,802 lines priced with no throttling and no retry, EDGAR 908
+lookups, statements 2,283 of 2,285. The funnel equalled the local run
+exactly (2,285 past the gates; 425 = 359 / 46 / 112), since both read
+Friday's close. Until a first run deploys, the Pages URL is a plain 404.
+
 A docs-only push does not trigger a run (`paths-ignore: **.md`); start one
 with `gh workflow run screen.yml`.
 
