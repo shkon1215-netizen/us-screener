@@ -1,0 +1,21 @@
+# Environment
+.venv/
+__pycache__/
+*.pyc
+
+# Fetch cache - per-day, per-machine, rebuilt on demand
+.us_cache/
+
+# Generated results and dashboards. Regenerated on every run, so committing
+# them only creates merge noise and stale data.
+us_screen_results.csv
+us_screen_results_meta.json
+us_dashboard.html
+# Calibration runs
+measure_*.csv
+measure_*.json
+*.log
+site/
+
+# Local preview config
+.claude/
