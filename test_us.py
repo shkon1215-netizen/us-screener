@@ -435,6 +435,121 @@ def check_pyramids():
        "revenue coincidences, and matching statements in different industries, are not pyramids")
 
 
+def check_cashflow():
+    from providers_us import cashflow_fields
+    print("\n=== cash flow: P/FCF and shareholder yield ===")
+    lf = pd.Timestamp("2025-12-31")
+    cf = pd.DataFrame({lf: {"Operating Cash Flow": 150e6, "Capital Expenditure": -50e6,
+                            "Free Cash Flow": 100e6, "Cash Dividends Paid": -20e6,
+                            "Repurchase Of Capital Stock": -30e6,
+                            "Issuance Of Capital Stock": 10e6}})
+    f = cashflow_fields(cf, lf)
+    ok(f == {"lf_fcf": 100e6, "lf_div_paid": 20e6, "lf_buyback": 30e6, "lf_issuance": 10e6},
+       f"cash-flow rows read as positive amounts ({f})")
+    cf2 = pd.DataFrame({lf: {"Operating Cash Flow": 150e6, "Capital Expenditure": -50e6}})
+    f2 = cashflow_fields(cf2, lf)
+    ok(f2["lf_fcf"] == 100e6 and f2["lf_div_paid"] == 0.0 and f2["lf_buyback"] == 0.0,
+       "no FCF row: operating cash flow less capex; an absent payout row is zero")
+    f3 = cashflow_fields(cf, pd.Timestamp("2024-12-31"))
+    ok(all(np.isnan(v) for v in f3.values()), "no column for the filed year -> missing, never zero")
+
+    df = pd.DataFrame([
+        dict(ticker="CASH", market_cap_local=2e9, fx_now=1.0, currency="USD", fin_ccy="USD",
+             sector="Industrials", lf_fcf=100e6, lf_div_paid=20e6, lf_buyback=30e6, lf_issuance=10e6),
+        # Buys back only what it issues to employees: no credit.
+        dict(ticker="SBC", market_cap_local=2e9, fx_now=1.0, currency="USD", fin_ccy="USD",
+             sector="Technology", lf_fcf=50e6, lf_div_paid=0.0, lf_buyback=40e6, lf_issuance=40e6),
+        dict(ticker="BANK", market_cap_local=2e9, fx_now=1.0, currency="USD", fin_ccy="USD",
+             sector="Financial Services", lf_fcf=900e6, lf_div_paid=60e6, lf_buyback=0.0,
+             lf_issuance=0.0),
+        dict(ticker="BURN", market_cap_local=2e9, fx_now=1.0, currency="USD", fin_ccy="USD",
+             sector="Technology", lf_fcf=-80e6, lf_div_paid=0.0, lf_buyback=0.0, lf_issuance=0.0),
+    ])
+    out, _ = UF.add_cashflow_metrics(df)
+    i = out.set_index("ticker")
+    ok(i.loc["CASH", "price_to_fcf"] == 20.0 and abs(i.loc["CASH", "sh_yield"] - 2.0) < 1e-9,
+       "P/FCF 20 and shareholder yield 2% (dividends + buybacks - issuance)")
+    ok(i.loc["SBC", "sh_yield"] == 0.0, "buybacks that only offset share grants earn no yield")
+    ok(np.isnan(i.loc["BANK", "price_to_fcf"]) and i.loc["BANK", "sh_yield"] == 3.0,
+       "a bank has no P/FCF (invariant 6) but keeps its shareholder yield")
+    ok(np.isnan(i.loc["BURN", "price_to_fcf"]), "negative free cash flow is a missing P/FCF, never cheap")
+
+    cfg = ScreenConfig()
+    rows = pd.DataFrame([
+        dict(ticker="BUYB", sector="Industrials", price_to_book=1.0, ev_to_ebitda=6.0,
+             roe_pct=15.0, div_yield=0.5, sh_yield=4.0, passes=False, avg_discount=0.0),
+        dict(ticker="NOCF", sector="Industrials", price_to_book=1.0, ev_to_ebitda=6.0,
+             roe_pct=15.0, div_yield=3.0, sh_yield=np.nan, passes=False, avg_discount=0.0),
+        dict(ticker="DILU", sector="Industrials", price_to_book=1.0, ev_to_ebitda=6.0,
+             roe_pct=15.0, div_yield=3.0, sh_yield=-1.0, passes=False, avg_discount=0.0),
+    ])
+    r, _ = UF.apply_absolute_screen(rows, cfg)
+    a = r.set_index("ticker")["abs_passes"]
+    ok(a["BUYB"] and a["NOCF"] and not a["DILU"],
+       "outright screen: a buyback payer passes the 2% floor; no statement falls back to "
+       "dividends; a 3% dividend paid out of new shares does not")
+
+
+def check_oneoff():
+    print("\n=== one-off guard ===")
+    cfg = ScreenConfig()
+
+    def row(t, ni, rev, opm, pe=10.0, eps=5.0, sector="Technology", hist=((100, 100), (100, 100))):
+        # Four-quarter operating profit = rev x opm here, for readability.
+        r = dict(ticker=t, sector=sector, ttm_ni=ni, ttm_op=rev * opm,
+                 trailing_pe=pe, trailing_eps=eps)
+        for k, (n_, o) in enumerate(hist, 1):
+            r[f"np_y{k}"], r[f"op_y{k}"] = n_, o
+        return r
+    df = pd.DataFrame([
+        # Lyft: net income 2.87bn on operating profit 0.17bn.
+        row("LYFT", 2.87e9, 6.77e9, 0.0258, pe=2.5, eps=7.0, hist=((-340, -100), (22, -70))),
+        # Microsoft: 1.19, ordinary.
+        row("MSFT", 133.75e9, 331.84e9, 0.4511, pe=33.0),
+        # Mitsubishi Corp shape: 2.1 now, and 2.0 in the filed years too.
+        row("TRAD", 895.9e9, 19878e9, 0.029, sector="Industrials",
+            hist=((950, 630), (960, 640))),
+        # Net profit under an operating loss.
+        row("OPLS", 0.15e9, 0.18e9, -5.67, pe=8.0, eps=2.0, sector="Healthcare"),
+        # A bank: exempt.
+        row("BANK", 64.5e9, 190.7e9, 0.10, sector="Financial Services"),
+    ])
+    out, stats = UF.apply_oneoff_guard(df, cfg)
+    i = out.set_index("ticker")
+    k = 6.77e9 * 0.0258 * 0.75 / 2.87e9
+    ok(bool(i.loc["LYFT", "oneoff_capped"]) and abs(i.loc["LYFT", "trailing_pe"] - 2.5 / k) < 1e-6
+       and abs(i.loc["LYFT", "trailing_eps"] - 7.0 * k) < 1e-9,
+       f"Lyft shape: P/E 2.5 restated on operating profit after tax -> {i.loc['LYFT', 'trailing_pe']:.0f}")
+    ok(not bool(i.loc["MSFT", "oneoff_capped"]) and i.loc["MSFT", "trailing_pe"] == 33.0,
+       "an ordinary company (ratio 1.19) untouched")
+    ok(not bool(i.loc["TRAD", "oneoff_capped"]) and bool(i.loc["TRAD", "oneoff_structural"]),
+       "a trading house's equity-method income is structural - same ratio every filed year - and spared")
+    ok(bool(i.loc["OPLS", "oneoff_capped"]) and np.isnan(i.loc["OPLS", "trailing_pe"]),
+       "a reported profit on an operating loss leaves no P/E")
+    ok(not bool(i.loc["BANK", "oneoff_capped"]), "financials exempt")
+    off, _ = UF.apply_oneoff_guard(df, ScreenConfig(oneoff_guard=False))
+    ok(not off["oneoff_capped"].any(), "--no-oneoff-guard leaves every P/E as reported")
+    # No four quarters (a half-yearly reporter): the filed year decides.
+    fy = pd.DataFrame([dict(ticker="HALF", sector="Industrials", ttm_ni=np.nan, ttm_op=np.nan,
+                            lf_np_rep=900.0, lf_op=150.0, trailing_pe=3.0, trailing_eps=1.0,
+                            np_y1=100, op_y1=130, np_y2=110, op_y2=140)])
+    o2, _ = UF.apply_oneoff_guard(fy, cfg)
+    ok(bool(o2.loc[0, "oneoff_capped"]) and o2.loc[0, "oneoff_basis"] == "filed year",
+       "no four quarters: the latest filed year is the basis")
+
+    from providers_us import ttm_fields
+    q = pd.DataFrame({pd.Timestamp(d): {"Operating Income": op, "Net Income Common Stockholders": ni}
+                      for d, op, ni in (("2025-06-30", 40, 30), ("2025-09-30", 50, 35),
+                                        ("2025-12-31", 60, 40), ("2026-03-31", 30, 900),
+                                        ("2026-06-30", 70, 50))})
+    t = ttm_fields(q, "2026-10-16")
+    ok(t == {"ttm_op": 210.0, "ttm_ni": 1025.0}, f"four latest quarters summed ({t})")
+    ok(np.isnan(ttm_fields(q.drop(columns=[pd.Timestamp("2025-12-31"), pd.Timestamp("2025-06-30")]),
+                           "2026-10-16")["ttm_op"]),
+       "a missing quarter (span over 300 days) -> no trailing figure, never three summed")
+    ok(np.isnan(ttm_fields(q, "2027-06-30")["ttm_op"]), "stale quarters -> no trailing figure")
+
+
 def check_rate_guard():
     from providers_us import RateGuard
     print("\n=== rate guard ===")
@@ -583,6 +698,8 @@ def main() -> int:
     check_screens()
     check_currency()
     check_pyramids()
+    check_cashflow()
+    check_oneoff()
     check_rate_guard()
     check_statements()
     check_split_basis()
